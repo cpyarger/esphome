@@ -62,6 +62,8 @@ UART_SELECTION_ESP32 = ["UART0", "UART1", "UART2"]
 
 UART_SELECTION_ESP8266 = ["UART0", "UART0_SWAP", "UART1"]
 
+UART_SELECTION_RP2040 = ["UART0", "UART1"]
+
 HARDWARE_UART_TO_UART_SELECTION = {
     "UART0": logger_ns.UART_SELECTION_UART0,
     "UART0_SWAP": logger_ns.UART_SELECTION_UART0_SWAP,
@@ -86,6 +88,8 @@ def uart_selection(value):
         return cv.one_of(*UART_SELECTION_ESP32, upper=True)(value)
     if CORE.is_esp8266:
         return cv.one_of(*UART_SELECTION_ESP8266, upper=True)(value)
+    if CORE.is_rp2040:
+        return cv.one_of(*UART_SELECTION_RP2040, upper=True)(value)
     raise NotImplementedError
 
 
@@ -138,12 +142,13 @@ CONFIG_SCHEMA = cv.All(
 @coroutine_with_priority(90.0)
 async def to_code(config):
     baud_rate = config[CONF_BAUD_RATE]
-    rhs = Logger.new(
-        baud_rate,
-        config[CONF_TX_BUFFER_SIZE],
-        HARDWARE_UART_TO_UART_SELECTION[config[CONF_HARDWARE_UART]],
-    )
-    log = cg.Pvariable(config[CONF_ID], rhs)
+    log = cg.new_Pvariable(config[CONF_ID], baud_rate, config[CONF_TX_BUFFER_SIZE])
+    if CONF_HARDWARE_UART in config:
+        cg.add(
+            log.set_uart_selection(
+                HARDWARE_UART_TO_UART_SELECTION[config[CONF_HARDWARE_UART]]
+            )
+        )
     cg.add(log.pre_setup())
 
     for tag, level in config[CONF_LOGS].items():
