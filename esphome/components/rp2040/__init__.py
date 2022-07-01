@@ -142,7 +142,7 @@ async def to_code(config):
     cg.add_platformio_option("framework", "arduino")
     cg.add_build_flag("-DUSE_ARDUINO")
     cg.add_build_flag("-DUSE_RP2040_FRAMEWORK_ARDUINO")
-    cg.add_platformio_option("platform", conf[CONF_PLATFORM_VERSION])
+    cg.add_platformio_option("platform", "https://github.com/maxgerhardt/platform-raspberrypi.git")
     cg.add_platformio_option(
         "platform_packages",
         [f"earlephilhower/framework-arduinopico @ {conf[CONF_SOURCE]}"],
