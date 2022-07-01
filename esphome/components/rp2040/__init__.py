@@ -132,12 +132,12 @@ async def to_code(config):
     cg.add(rp2040_ns.setup_preferences())
 
     cg.add_platformio_option("lib_ldf_mode", "off")
-
+    cg.add_platformio_option("upload_protocol", "mbed")
     cg.add_platformio_option("board", config[CONF_BOARD])
     cg.add_build_flag("-DUSE_RP2040")
     cg.add_define("ESPHOME_BOARD", config[CONF_BOARD])
     cg.add_define("ESPHOME_VARIANT", "RP2040")
-
+    
     conf = config[CONF_FRAMEWORK]
     cg.add_platformio_option("framework", "arduino")
     cg.add_build_flag("-DUSE_ARDUINO")
