@@ -63,8 +63,8 @@ ARDUINO_PLATFORM_VERSION = cv.Version(1, 7, 0)
 def _arduino_check_versions(value):
     value = value.copy()
     lookups = {
-        "dev": (cv.Version(2, 1, 1), "https://github.com/maxgerhardt/platform-raspberrypi.git"),
-        "latest": (cv.Version(2, 1, 1), None),
+        "dev": (cv.Version(2, 2, 2), "https://github.com/maxgerhardt/platform-raspberrypi.git"),
+        "latest": (cv.Version(2, 2, 2), None),
         "recommended": (RECOMMENDED_ARDUINO_FRAMEWORK_VERSION, None),
     }
 
