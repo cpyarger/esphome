@@ -40,7 +40,7 @@ def _format_framework_arduino_version(ver: cv.Version) -> str:
     # format the given arduino (https://github.com/earlephilhower/arduino-pico/releases) version to
     # a PIO earlephilhower/framework-arduinopico value
     # List of package versions: https://api.registry.platformio.org/v3/packages/earlephilhower/tool/framework-arduinopico
-    return f"~1.{ver.major}{ver.minor:02d}{ver.patch:02d}.0"
+    return f"~1.20202.0"
 
 
 # NOTE: Keep this in mind when updating the recommended version:
