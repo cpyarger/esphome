@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 from esphome import const, writer, yaml_util
@@ -21,6 +22,9 @@ from esphome.const import (
     CONF_PORT,
     CONF_ESPHOME,
     CONF_PLATFORMIO_OPTIONS,
+    PLATFORM_ESP32,
+    PLATFORM_ESP8266,
+    PLATFORM_RP2040,
     CONF_SUBSTITUTIONS,
     SECRETS_FILES,
 )
@@ -101,11 +105,11 @@ def run_miniterm(config, port):
 
     if CONF_LOGGER not in config:
         _LOGGER.info("Logger is not enabled. Not starting UART logs.")
-        return
+        return 1
     baud_rate = config["logger"][CONF_BAUD_RATE]
     if baud_rate == 0:
         _LOGGER.info("UART logging is disabled (baud_rate=0). Not starting UART logs.")
-        return
+        return 1
     _LOGGER.info("Starting log output from %s with baud rate %s", port, baud_rate)
 
     backtrace_state = False
@@ -119,25 +123,34 @@ def run_miniterm(config, port):
         ser.dtr = False
         ser.rts = False
 
-    with ser:
-        while True:
-            try:
-                raw = ser.readline()
-            except serial.SerialException:
-                _LOGGER.error("Serial port closed!")
-                return
-            line = (
-                raw.replace(b"\r", b"")
-                .replace(b"\n", b"")
-                .decode("utf8", "backslashreplace")
-            )
-            time = datetime.now().time().strftime("[%H:%M:%S]")
-            message = time + line
-            safe_print(message)
+    tries = 0
+    while tries < 5:
+        try:
+            with ser:
+                while True:
+                    try:
+                        raw = ser.readline()
+                    except serial.SerialException:
+                        _LOGGER.error("Serial port closed!")
+                        return 0
+                    line = (
+                        raw.replace(b"\r", b"")
+                        .replace(b"\n", b"")
+                        .decode("utf8", "backslashreplace")
+                    )
+                    time_str = datetime.now().time().strftime("[%H:%M:%S]")
+                    message = time_str + line
+                    safe_print(message)
 
-            backtrace_state = platformio_api.process_stacktrace(
-                config, line, backtrace_state=backtrace_state
-            )
+                    backtrace_state = platformio_api.process_stacktrace(
+                        config, line, backtrace_state=backtrace_state
+                    )
+        except serial.SerialException:
+            tries += 1
+            time.sleep(1)
+    if tries >= 5:
+        _LOGGER.error("Could not connect to serial port %s", port)
+        return 1
 
 
 def wrap_to_code(name, comp):
@@ -258,30 +271,40 @@ def upload_using_esptool(config, port):
 
 
 def upload_program(config, args, host):
-    # if upload is to a serial port use platformio, otherwise assume ota
-    if get_port_type(host) == "SERIAL":
-        return upload_using_esptool(config, host)
+    if CORE.target_platform in (PLATFORM_RP2040):
+        from esphome import platformio_api
 
-    from esphome import espota2
+        upload_args = ["-t", "upload"]
+        if args.device is not None:
+            upload_args += ["--upload-port", args.device]
+        return platformio_api.run_platformio_cli_run(config, CORE.verbose, *upload_args)
 
-    if CONF_OTA not in config:
-        raise EsphomeError(
-            "Cannot upload Over the Air as the config does not include the ota: "
-            "component"
-        )
+    if CORE.target_platform in (PLATFORM_ESP32, PLATFORM_ESP8266):
+        # if upload is to a serial port use platformio, otherwise assume ota
+        if get_port_type(host) == "SERIAL":
+            return upload_using_esptool(config, host)
 
-    ota_conf = config[CONF_OTA]
-    remote_port = ota_conf[CONF_PORT]
-    password = ota_conf.get(CONF_PASSWORD, "")
-    return espota2.run_ota(host, remote_port, password, CORE.firmware_bin)
+        from esphome import espota2
+
+        if CONF_OTA not in config:
+            raise EsphomeError(
+                "Cannot upload Over the Air as the config does not include the ota: "
+                "component"
+            )
+
+        ota_conf = config[CONF_OTA]
+        remote_port = ota_conf[CONF_PORT]
+        password = ota_conf.get(CONF_PASSWORD, "")
+        return espota2.run_ota(host, remote_port, password, CORE.firmware_bin)
+
+    return 1
 
 
 def show_logs(config, args, port):
     if "logger" not in config:
         raise EsphomeError("Logger is not configured!")
     if get_port_type(port) == "SERIAL":
-        run_miniterm(config, port)
-        return 0
+        return run_miniterm(config, port)
     if get_port_type(port) == "NETWORK" and "api" in config:
         from esphome.components.api.client import run_logs
 
@@ -496,83 +519,85 @@ def command_rename(args, config):
                 )
             )
             return 1
+    # Load existing yaml file
     with open(CORE.config_path, mode="r+", encoding="utf-8") as raw_file:
         raw_contents = raw_file.read()
-        yaml = yaml_util.load_yaml(CORE.config_path)
-        if CONF_ESPHOME not in yaml or CONF_NAME not in yaml[CONF_ESPHOME]:
-            print(
-                color(
-                    Fore.BOLD_RED, "Complex YAML files cannot be automatically renamed."
+
+    yaml = yaml_util.load_yaml(CORE.config_path)
+    if CONF_ESPHOME not in yaml or CONF_NAME not in yaml[CONF_ESPHOME]:
+        print(
+            color(Fore.BOLD_RED, "Complex YAML files cannot be automatically renamed.")
+        )
+        return 1
+    old_name = yaml[CONF_ESPHOME][CONF_NAME]
+    match = re.match(r"^\$\{?([a-zA-Z0-9_]+)\}?$", old_name)
+    if match is None:
+        new_raw = re.sub(
+            rf"name:\s+[\"']?{old_name}[\"']?",
+            f'name: "{args.name}"',
+            raw_contents,
+        )
+    else:
+        old_name = yaml[CONF_SUBSTITUTIONS][match.group(1)]
+        if (
+            len(
+                re.findall(
+                    rf"^\s+{match.group(1)}:\s+[\"']?{old_name}[\"']?",
+                    raw_contents,
+                    flags=re.MULTILINE,
                 )
             )
-            return 1
-        old_name = yaml[CONF_ESPHOME][CONF_NAME]
-        match = re.match(r"^\$\{?([a-zA-Z0-9_]+)\}?$", old_name)
-        if match is None:
-            new_raw = re.sub(
-                rf"name:\s+[\"']?{old_name}[\"']?",
-                f'name: "{args.name}"',
-                raw_contents,
-            )
-        else:
-            old_name = yaml[CONF_SUBSTITUTIONS][match.group(1)]
-            if (
-                len(
-                    re.findall(
-                        rf"^\s+{match.group(1)}:\s+[\"']?{old_name}[\"']?",
-                        raw_contents,
-                        flags=re.MULTILINE,
-                    )
-                )
-                > 1
-            ):
-                print(color(Fore.BOLD_RED, "Too many matches in YAML to safely rename"))
-                return 1
-
-            new_raw = re.sub(
-                rf"^(\s+{match.group(1)}):\s+[\"']?{old_name}[\"']?",
-                f'\\1: "{args.name}"',
-                raw_contents,
-                flags=re.MULTILINE,
-            )
-
-        raw_file.seek(0)
-        raw_file.write(new_raw)
-        raw_file.flush()
-
-        print(f"Updating {color(Fore.CYAN, CORE.config_path)}")
-        print()
-
-        rc = run_external_process("esphome", "config", CORE.config_path)
-        if rc != 0:
-            raw_file.seek(0)
-            raw_file.write(raw_contents)
-            print(color(Fore.BOLD_RED, "Rename failed. Reverting changes."))
+            > 1
+        ):
+            print(color(Fore.BOLD_RED, "Too many matches in YAML to safely rename"))
             return 1
 
-        cli_args = [
-            "run",
-            CORE.config_path,
-            "--no-logs",
-            "--device",
-            CORE.address,
-        ]
+        new_raw = re.sub(
+            rf"^(\s+{match.group(1)}):\s+[\"']?{old_name}[\"']?",
+            f'\\1: "{args.name}"',
+            raw_contents,
+            flags=re.MULTILINE,
+        )
 
-        if args.dashboard:
-            cli_args.insert(0, "--dashboard")
+    new_path = os.path.join(CORE.config_dir, args.name + ".yaml")
+    print(
+        f"Updating {color(Fore.CYAN, CORE.config_path)} to {color(Fore.CYAN, new_path)}"
+    )
+    print()
 
-        try:
-            rc = run_external_process("esphome", *cli_args)
-        except KeyboardInterrupt:
-            rc = 1
-        if rc != 0:
-            raw_file.seek(0)
-            raw_file.write(raw_contents)
-            return 1
+    with open(new_path, mode="w", encoding="utf-8") as new_file:
+        new_file.write(new_raw)
 
-        print(color(Fore.BOLD_GREEN, "SUCCESS"))
-        print()
-        return 0
+    rc = run_external_process("esphome", "config", new_path)
+    if rc != 0:
+        print(color(Fore.BOLD_RED, "Rename failed. Reverting changes."))
+        os.remove(new_path)
+        return 1
+
+    cli_args = [
+        "run",
+        new_path,
+        "--no-logs",
+        "--device",
+        CORE.address,
+    ]
+
+    if args.dashboard:
+        cli_args.insert(0, "--dashboard")
+
+    try:
+        rc = run_external_process("esphome", *cli_args)
+    except KeyboardInterrupt:
+        rc = 1
+    if rc != 0:
+        os.remove(new_path)
+        return 1
+
+    os.remove(CORE.config_path)
+
+    print(color(Fore.BOLD_GREEN, "SUCCESS"))
+    print()
+    return 0
 
 
 PRE_CONFIG_ACTIONS = {
@@ -776,7 +801,10 @@ def parse_args(argv):
         "configuration", help="Your YAML configuration file(s).", nargs=1
     )
 
-    parser_rename = subparsers.add_parser("rename")
+    parser_rename = subparsers.add_parser(
+        "rename",
+        help="Rename a device in YAML, compile the binary and upload it.",
+    )
     parser_rename.add_argument(
         "configuration", help="Your YAML configuration file.", nargs=1
     )
